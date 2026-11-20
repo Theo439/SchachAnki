@@ -451,3 +451,27 @@ cg-board square.check { background: radial-gradient(ellipse at center, rgba(255,
 .tab.on { background: var(--card2); color: var(--text); }
 .linkish { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; justify-self: start; font-size: 13px; }
 @media (max-width: 900px) { .account-btn { padding: 6px 10px; } }
+
+/* ---- v0.8 Design ---- */
+.mainnav { display: flex; gap: 4px; background: var(--bg2); border: 1px solid var(--line); border-radius: 11px; padding: 3px; margin-left: 10px; }
+.mainnav button { background: none; border: 0; padding: 7px 14px; border-radius: 8px; cursor: pointer; font-weight: 600; color: var(--muted); }
+.mainnav button.on { background: var(--card2); color: var(--text); }
+.mainnav button:hover:not(.on) { color: var(--text); }
+.hero h1 { margin-bottom: 14px; }
+.card.rep { padding: 0; overflow: hidden; gap: 0; }
+.card.rep > :not(.cover-btn) { margin: 0 16px; }
+.card.rep > .card-head { margin-top: 14px; }
+.card.rep > .card-foot { margin: 12px 16px 16px; }
+.cover-btn { display: block; padding: 0; border: 0; background: none; cursor: pointer; width: 100%; }
+.cover { width: 100%; aspect-ratio: 1 / 1; pointer-events: none; }
+.cover cg-board { border-radius: 0; }
+.rep-count { margin: 10px 16px 0 !important; font-size: 14px; color: var(--muted); flex: 0 !important; display: flex; align-items: center; gap: 10px; }
+.rep-count b { color: var(--text); font-size: 16px; }
+.due-pill { font-size: 12px; font-weight: 600; color: var(--due); background: rgba(111, 191, 115, .14); border-radius: 99px; padding: 2px 9px; }
+.card.rep .empty-hint { margin-top: 10px; }
+.card.rep h3 { line-height: 1.2; }
+@media (max-width: 700px) { .mainnav { margin-left: 0; } .mainnav button { padding: 6px 10px; } #logo .word { display: none; } }
+.hero-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.rep-grid { grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); }
+.rep-grid .add-card { min-height: 220px; }
+.card.rep .card-foot .btn { padding: 8px 12px; font-size: 14px; }

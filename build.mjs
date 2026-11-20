@@ -49,6 +49,7 @@ ${css}
 <body>
 <header class="top">
   <button id="logo" aria-label="Zur Übersicht"><span class="mark">♞</span><span class="word">Schach-Anki</span></button>
+  <nav class="mainnav"><button data-view="home" class="on">Training</button><button data-view="spar">Sparring</button></nav>
   <span class="spacer"></span>
   <span id="save-state"></span>
   <span id="storage" class="status"></span>${WEB ? '\n  <button id="account-btn" class="btn small account-btn">Anmelden</button>' : ''}

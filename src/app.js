@@ -505,6 +505,7 @@ function setView(view, params = {}) {
   if (cg) { cg.destroy(); cg = null; }
   if (keyHandler) { document.removeEventListener('keydown', keyHandler); keyHandler = null; }
   app.view = view;
+  document.querySelectorAll('.mainnav button').forEach((b) => b.classList.toggle('on', (b.dataset.view === 'spar') === (view === 'spar')));
   const main = $('#main');
   main.innerHTML = '';
   main.className = 'view-' + view;
@@ -555,12 +556,8 @@ function renderHome(main) {
 
   const hero = h('section', { class: 'hero' },
     h('div', { class: 'hero-text' },
-      h('h1', {}, startCount ? 'Bereit fürs Training?' : app.reps.length ? 'Für heute alles erledigt' : 'Willkommen bei Schach-Anki'),
-      h('p', {}, app.reps.length
-        ? startCount
-          ? `${t.due} Wiederholung${t.due === 1 ? '' : 'en'} fällig, ${t.newToday} neue Variante${t.newToday === 1 ? '' : 'n'} stehen an.`
-          : t.nextDue < Infinity ? `Nächste Wiederholung in ${C.formatInterval(t.nextDue - Date.now())}. Du kannst trotzdem neue Varianten hinzufügen.` : 'Du kannst neue Varianten hinzufügen.'
-        : 'Füge unten eine Vorlage hinzu oder lege dein eigenes Repertoire an. Danach trainierst du jeden Tag ein paar Minuten, und die App sorgt dafür, dass du jede Stellung genau dann wiederholst, wenn du sie fast vergessen hättest.'),
+      h('h1', {}, 'Training'),
+      !startCount && app.reps.length && t.nextDue < Infinity ? h('p', { class: 'muted' }, `Nächste Wiederholung in ${C.formatInterval(t.nextDue - Date.now())}`) : null,
       app.reps.length ? h('div', { class: 'hero-actions' },
         h('button', { class: 'btn primary big', disabled: !startCount, onclick: () => setView('train', { repIds: app.reps.map((r) => r.id) }) }, startCount ? `Alles trainieren (${startCount})` : 'Nichts fällig 🎉'),
       ) : null,
@@ -570,14 +567,10 @@ function renderHome(main) {
     ),
   );
 
-  const sp = sparState();
-  hero.querySelector('.hero-text').append(h('div', { class: 'hero-actions spar-cta' },
-    h('button', { class: 'btn big', onclick: () => setView('spar') }, '⚔ Sparring gegen die Engine'),
-    h('span', { class: 'muted small' }, `Wertung ${Math.round(sp.rating)} · ${SPAR_MOVES} Züge, danach Auswertung`)));
-  const repGrid = h('div', { class: 'grid' });
+  const repGrid = h('div', { class: 'grid rep-grid' });
   for (const rep of app.reps) repGrid.append(repCard(rep));
   repGrid.append(h('button', { class: 'card add-card', onclick: openNewRepDialog },
-    h('span', { class: 'plus' }, '+'), h('strong', {}, 'Eigenes Repertoire'), h('span', { class: 'muted' }, 'Züge auf dem Brett eingeben oder PGN einfügen')));
+    h('span', { class: 'plus' }, '+'), h('strong', {}, 'Eigenes Repertoire')));
 
   const available = PRESETS.filter((p) => !app.reps.some((r) => r.presetId === p.id));
   const presetGrid = h('div', { class: 'grid' });
@@ -595,15 +588,7 @@ function renderHome(main) {
   main.append(
     hero,
     h('section', {}, h('h2', {}, 'Meine Repertoires'), repGrid),
-    available.length ? h('section', {}, h('h2', {}, 'Vorlagen'), h('p', { class: 'muted section-sub' }, 'Fertige Einsteiger-Repertoires. Nach dem Hinzufügen kannst du alles anpassen.'), presetGrid) : null,
-    h('section', { class: 'howto' },
-      h('h2', {}, 'So funktioniert’s'),
-      h('ol', {},
-        h('li', {}, h('strong', {}, 'Repertoire anlegen. '), 'Jede Variante – vom ersten Zug bis zum Ende einer Abzweigung – wird zu einer Karteikarte.'),
-        h('li', {}, h('strong', {}, 'Neue Züge lernen. '), 'Du spielst die ganze Variante durch, der Gegner zieht automatisch. Bei neuen Zügen zeigt ein Pfeil, was zu spielen ist.'),
-        h('li', {}, h('strong', {}, 'Wiederholen. '), 'Fehlerfrei gespielte Varianten kommen in immer größeren Abständen wieder (1 Tag, 3 Tage, 1 Woche …), Varianten mit Fehlern bald nochmal.'),
-      ),
-    ),
+    available.length ? h('section', {}, h('h2', {}, 'Vorlagen'), presetGrid) : null,
   );
 }
 
@@ -624,16 +609,19 @@ function repCard(rep) {
     : s.paused ? 'Alle Stellungen sind pausiert.'
     : `Es fehlen eigene Antworten: Ergänze nach den Zügen von ${colorName(rep.color === 'w' ? 'b' : 'w')} jeweils deinen Zug.`;
   void otherMoves;
+  // Cover: Grundstellung nach dem ersten eigenen Zug der Hauptvariante
+  let coverNode = rep.root;
+  for (let n = rep.root.children[0]; n; n = n.children[0]) { coverNode = n; if (C.isOwnMove(n, rep.color)) break; }
+  const cover = h('div', { class: 'cover' });
+  requestAnimationFrame(() => Chessground(cover, {
+    fen: coverNode.fen, orientation: cgColor(rep.color), viewOnly: true, coordinates: false,
+    lastMove: lastMoveOf(coverNode), animation: { enabled: false }, drawable: { enabled: false, visible: false },
+  }));
+  const coverLabel = coverNode.parent ? C.pathOf(coverNode).map((san, i) => (i % 2 === 0 ? `${i / 2 + 1}.` : '') + fmt(san)).join(' ') : 'Grundstellung';
   return h('div', { class: 'card rep' },
-    h('div', { class: 'card-head' }, pieceIcon(rep.color), h('h3', {}, rep.name)),
-    h('div', { class: 'progress', title: `${s.seen} von ${s.total} Varianten gelernt` }, h('div', { class: 'bar', style: `width:${pct}%` })),
-    h('div', { class: 'rep-nums' },
-      h('span', { class: 'n new' }, h('b', {}, s.fresh), ' neu'),
-      h('span', { class: 'n learn' }, h('b', {}, s.learning), ' in Lernphase'),
-      h('span', { class: 'n due' }, h('b', {}, s.due), ' fällig'),
-      h('span', { class: 'n' }, h('b', {}, s.total), s.total === 1 ? ' Variante' : ' Varianten'),
-      s.paused ? h('span', { class: 'n' }, h('b', {}, s.paused), ' pausiert') : null,
-    ),
+    h('button', { class: 'cover-btn', title: 'Bearbeiten', onclick: () => setView('edit', { repId: rep.id }) }, cover),
+    h('div', { class: 'card-head' }, pieceIcon(rep.color), h('div', { class: 'tt' }, h('h3', {}, rep.name), h('span', { class: 'muted small' }, coverLabel))),
+    h('p', { class: 'rep-count' }, h('b', {}, s.total), s.total === 1 ? ' Variante' : ' Varianten', s.due ? h('span', { class: 'due-pill' }, `${s.due} fällig`) : null),
     emptyHint ? h('p', { class: 'empty-hint' }, emptyHint) : null,
     h('div', { class: 'card-foot' },
       h('button', { class: 'btn ghost', onclick: () => setView('edit', { repId: rep.id }) }, 'Bearbeiten'),
@@ -1341,12 +1329,10 @@ function renderSparStart(main, st) {
   const last = st.games.slice(-10).reverse();
   const pending = readPending();
   const choose = (c) => setView('spar', { color: c === 'r' ? (Math.random() < 0.5 ? 'w' : 'b') : c });
-  main.append(
-    h('div', { class: 'topline' }, h('button', { class: 'btn ghost', onclick: () => setView('home') }, '← Übersicht')),
+  main.append(...[
     h('section', { class: 'hero spar-hero' },
       h('div', { class: 'hero-text' },
-        h('h1', {}, '⚔ Sparring gegen die Engine'),
-        h('p', {}, `Spiel ${SPAR_MOVES} Züge gegen Stockfish in voller Stärke. In der Eröffnung antwortet die Engine mit Hauptzügen aus Meisterpartien, danach rechnet sie selbst. Zum Schluss bekommst du eine Auswertung: Wie stehst du, wo bist du von deinem Repertoire abgewichen und wo waren Fehler?`),
+        h('h1', {}, 'Sparring'),
         h('div', { class: 'hero-actions' },
           h('button', { class: 'btn primary big', onclick: () => choose('w') }, '♔ Mit Weiß'),
           h('button', { class: 'btn primary big', onclick: () => choose('b') }, '♚ Mit Schwarz'),
@@ -1361,8 +1347,6 @@ function renderSparStart(main, st) {
         h('button', { class: 'btn primary', onclick: () => setView('spar', { color: pending.color, resume: pending.sans }) }, 'Jetzt auswerten'),
         h('button', { class: 'btn ghost', onclick: () => { try { localStorage.removeItem(PENDING_KEY); } catch (e) { /* egal */ } setView('spar'); } }, 'Verwerfen')))) : null,
     st.games.length >= 2 ? h('section', {}, h('h2', {}, 'Wertungsverlauf'), ratingChart(st.games)) : null,
-    h('section', { class: 'howto' }, h('h2', {}, 'So funktioniert die Wertung'),
-      h('p', { class: 'muted' }, 'Nach jeder Partie wird gemessen, wie viel du pro Zug im Schnitt gegenüber dem besten Engine-Zug verlierst (durchschnittlicher Zugverlust in Hundertstel-Bauern). Daraus ergibt sich eine Partie-Leistung – z. B. etwa 2400 bei 25, 1900 bei 50, 1400 bei 80 –, dazu kommen bis zu ±150 Punkte je nachdem, wie du nach 15 Zügen stehst. Deine Wertung bewegt sich schrittweise in Richtung dieser Leistung: in den ersten Partien schnell, danach immer ruhiger. Sie ist ein Trainingswert und nicht direkt mit Lichess oder DWZ vergleichbar.')),
     last.length ? h('section', {}, h('h2', {}, 'Letzte Partien'),
       h('div', { class: 'spar-hist' }, ...last.map((g) => h('div', { class: 'spar-row', onclick: () => setView('spar', { report: g }) },
         h('span', {}, new Date(g.d).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })),
@@ -1372,7 +1356,7 @@ function renderSparStart(main, st) {
         h('span', {}, `${g.acc}%`),
         h('span', { class: 'muted' }, g.perf ? `≈${g.perf}` : ''),
         h('span', { class: g.delta >= 0 ? 'pos' : 'neg' }, (g.delta >= 0 ? '+' : '') + g.delta))))) : null,
-  );
+  ].filter(Boolean));
 }
 
 function ratingChart(games) {
@@ -2392,6 +2376,7 @@ async function boot() {
   $('#settings-btn').addEventListener('click', openSettings);
   $('#account-btn')?.addEventListener('click', openAccount);
   $('#logo').addEventListener('click', () => setView('home'));
+  document.querySelectorAll('.mainnav button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
   renderStatus();
   $('#main').innerHTML = '<div class="loading"><div class="spinner"></div><p>Lade dein Repertoire …</p></div>';
   X.loadNames().catch(() => {});
