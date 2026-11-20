@@ -475,3 +475,7 @@ cg-board square.check { background: radial-gradient(ellipse at center, rgba(255,
 .rep-grid { grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); }
 .rep-grid .add-card { min-height: 220px; }
 .card.rep .card-foot .btn { padding: 8px 12px; font-size: 14px; }
+.result-line { font-weight: 700; font-size: 15px; }
+.result-line.win { color: var(--good); }
+.result-line.loss { color: var(--bad); }
+.result-line span { font-weight: 400; }

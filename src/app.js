@@ -766,9 +766,9 @@ function backupSection() {
     h('button', { class: 'btn small', onclick: () => { if (ta.value.trim()) doRestore(ta.value.trim()); } }, 'Eingefügten Text einspielen'));
 }
 
-function confirmDialog(title, text, okLabel, onOk) {
+function confirmDialog(title, text, okLabel, onOk, cancelLabel = 'Abbrechen') {
   modal(title, h('p', {}, text), (close) => [
-    h('button', { class: 'btn ghost', onclick: close }, 'Abbrechen'),
+    h('button', { class: 'btn ghost', onclick: close }, cancelLabel),
     h('button', { class: 'btn danger', onclick: () => { close(); onOk(); } }, okLabel),
   ]);
 }
@@ -1352,7 +1352,7 @@ function renderSparStart(main, st) {
         h('span', {}, new Date(g.d).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })),
         pieceIcon(g.c),
         h('span', { class: 'spar-open' }, g.open || '–'),
-        h('span', { class: 'spar-ev' }, (g.cpUser >= 0 ? '+' : '') + (g.cpUser / 100).toFixed(1)),
+        h('span', { class: 'spar-ev ' + (g.result === 'win' ? 'pos' : g.result === 'loss' ? 'neg' : '') }, (g.result === 'win' ? '✓ ' : g.result === 'loss' ? '✕ ' : '') + (g.cpUser >= 0 ? '+' : '') + (g.cpUser / 100).toFixed(1)),
         h('span', {}, `${g.acc}%`),
         h('span', { class: 'muted' }, g.perf ? `≈${g.perf}` : ''),
         h('span', { class: g.delta >= 0 ? 'pos' : 'neg' }, (g.delta >= 0 ? '+' : '') + g.delta))))) : null,
@@ -1383,7 +1383,7 @@ function renderSparGame(main, st, color, resume) {
   const openEl = h('div', { class: 'muted small' });
   main.append(
     h('div', { class: 'topline' },
-      h('button', { class: 'btn ghost', onclick: () => confirmDialog('Partie abbrechen?', 'Die Partie wird nicht gewertet.', 'Abbrechen', () => setView('spar')) }, '← Abbrechen'),
+      h('button', { class: 'btn ghost', onclick: () => confirmDialog('Partie beenden?', 'Die Partie wird nicht gewertet.', 'Partie beenden', () => setView('spar'), 'Weiterspielen') }, '← Partie beenden'),
       h('div', { class: 'counters' }, h('span', { class: 'cnt cram' }, `Wertung ${Math.round(st.rating)}`))),
     h('div', { class: 'layout' },
       h('div', { class: 'board-col' }, h('div', { class: 'board-holder' }, boardEl)),
@@ -1488,7 +1488,7 @@ function renderSparGame(main, st, color, resume) {
         if (ch.isCheckmate()) evals.push({ cp: ch.turn() === 'w' ? -1500 : 1500, best: null });
         else if (ch.isGameOver()) evals.push({ cp: 0, best: null });
         else {
-          const r = await sparEngine.run(fens[i], 'go depth 14 movetime 600', { skill: 20, timeout: 2500 });
+          const r = await sparEngine.run(fens[i], 'go depth 16 movetime 800', { skill: 20, timeout: 3000 });
           const best = r.best && r.best !== '(none)' ? r.best : null;
           evals.push({ cp: C.evalToCp(r.lines[0]), best });
         }
@@ -1525,49 +1525,80 @@ function renderSparGame(main, st, color, resume) {
   else { status.append(h('p', {}, h('strong', {}, 'Du beginnst.'), ' Spiel deinen ersten Zug.')); }
 }
 
+// Ergebnis nach 15 Zügen (aus Sicht des Spielers):
+// Weiß gewinnt, wenn er nicht schlechter steht (≥ 0,00).
+// Schwarz gewinnt, wenn er höchstens leicht schlechter steht (Weiß ≤ +1,00).
+const RESULT_LIMIT = { w: 0, b: 100 };
+function sparResult(color, finalCp) {
+  return color === 'w' ? (finalCp >= -RESULT_LIMIT.w ? 'win' : 'loss') : (finalCp <= RESULT_LIMIT.b ? 'win' : 'loss');
+}
+
 function buildReport(color, sans, fens, evals, st) {
   const moves = [];
   let accSum = 0, accN = 0, cpLossSum = 0;
   const counts = { blunder: 0, mistake: 0, inacc: 0 };
+  const clamp = (v) => Math.max(-1000, Math.min(1000, v));
   sans.forEach((san, i) => {
     const mine = (i % 2 === 0) === (color === 'w');
     const before = evals[i].cp, after = evals[i + 1].cp;
     const wb = C.winPct(before), wa = C.winPct(after);
     const loss = Math.max(0, color === 'w' ? wb - wa : wa - wb);
+    // Verlust in Hundertstel-Bauern aus Sicht des Spielers
+    const cpLoss = Math.max(0, color === 'w' ? clamp(before) - clamp(after) : clamp(after) - clamp(before));
+    const userBefore = color === 'w' ? before : -before;
     const ch = new Chess(fens[i]);
     let bestSan = null;
     if (evals[i].best) { try { bestSan = ch.move({ from: evals[i].best.slice(0, 2), to: evals[i].best.slice(2, 4), promotion: evals[i].best[4] || 'q' }).san; } catch (e) { /* egal */ } }
     let cls = null;
     if (mine) {
-      if (loss >= 30) { cls = 'blunder'; counts.blunder++; }
-      else if (loss >= 20) { cls = 'mistake'; counts.mistake++; }
-      else if (loss >= 10) { cls = 'inacc'; counts.inacc++; }
+      // Zwei Maßstäbe, der strengere zählt: Verlust an Gewinnchance UND Verlust in Bauerneinheiten.
+      // Die Bauerneinheiten zählen nur, solange die Stellung noch nicht klar entschieden ist.
+      const open = Math.abs(userBefore) < 500;
+      const cpCls = !open ? null : cpLoss >= 300 ? 'blunder' : cpLoss >= 120 ? 'mistake' : cpLoss >= 50 ? 'inacc' : null;
+      const wCls = loss >= 30 ? 'blunder' : loss >= 20 ? 'mistake' : loss >= 10 ? 'inacc' : null;
+      const rank = { blunder: 3, mistake: 2, inacc: 1, null: 0 };
+      cls = rank[cpCls] >= rank[wCls] ? cpCls : wCls;
+      if (cls) counts[cls]++;
       else if (bestSan === san) cls = 'best';
       accSum += Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.04354 * loss) - 3.1669));
-      const cb = Math.max(-1000, Math.min(1000, before)), ca = Math.max(-1000, Math.min(1000, after));
-      cpLossSum += Math.max(0, color === 'w' ? cb - ca : ca - cb);
+      cpLossSum += cpLoss;
       accN++;
     }
-    moves.push({ san, mine, loss: Math.round(loss), cls, best: bestSan, bestUci: evals[i].best, cp: after });
+    moves.push({ san, mine, loss: Math.round(loss), cpLoss: Math.round(cpLoss), cls, best: bestSan, bestUci: evals[i].best, cp: after });
   });
   const finalCp = evals[evals.length - 1].cp;
   const cpUser = color === 'w' ? finalCp : -finalCp;
+  const result = sparResult(color, finalCp);
+  // Verloren, aber kein Fehler gefunden? Dann den Zug markieren, bei dem die Stellung am stärksten gekippt ist.
+  if (result === 'loss' && !counts.blunder && !counts.mistake) {
+    let worst = -1;
+    moves.forEach((m, i) => { if (m.mine && (worst < 0 || m.cpLoss > moves[worst].cpLoss)) worst = i; });
+    if (worst >= 0 && moves[worst].cpLoss > 0) {
+      const m = moves[worst];
+      if (m.cls && m.cls !== 'best') counts[m.cls]--;
+      m.cls = 'mistake'; m.turn = true; counts.mistake++;
+    }
+  }
   const acc = accN ? Math.round(accSum / accN) : 0;
-  // Wertung: Partie gegen gleich starke Engine, Ergebnis = Gewinnchance der Endstellung
-  // Leistung der Partie aus dem durchschnittlichen Verlust pro Zug (ACPL)
   const acpl = Math.round(cpLossSum / Math.max(1, accN));
-  // Qualität der Züge (ACPL) plus ein kleiner Zuschlag / Abzug für die erreichte Stellung
-  const perf = Math.max(400, Math.min(2900, Math.round(perfFromAcpl(acpl) + 300 * (C.winPct(cpUser) / 100 - 0.5))));
+  // Partie-Leistung: Qualität der Züge (ACPL) plus deutlicher Zuschlag/Abzug für Sieg/Niederlage.
+  // Je klarer das Ergebnis, desto mehr (bis zu weitere ±100).
+  const margin = color === 'w' ? finalCp + RESULT_LIMIT.w : RESULT_LIMIT.b - finalCp; // > 0 = Sieg
+  const bonus = (result === 'win' ? 150 : -150) + Math.max(-100, Math.min(100, margin / 3));
+  const perf = Math.max(400, Math.min(2900, Math.round(perfFromAcpl(acpl) + bonus)));
   const before = st.rating;
   const n = st.games.length;
   const k = n < 3 ? 0.5 : n < 10 ? 0.25 : 0.15; // anfangs schnell, später stabil
-  st.rating = Math.round(before + k * (perf - before));
+  let next = Math.round(before + k * (perf - before));
+  // Ein Sieg kostet nie Punkte, eine Niederlage bringt nie welche.
+  if (result === 'win') next = Math.max(next, before + 2);
+  if (result === 'loss') next = Math.min(next, before - 2);
+  st.rating = next;
   const delta = st.rating - before;
-  // Eröffnungsname
   let open = null;
   const c2 = new Chess();
   for (const s of sans) { c2.move(s); const x = X.nameOf(c2.fen()); if (x) open = x.name; }
-  return { d: Date.now(), c: color, sans, moves, finalCp, cpUser, acc, counts, delta, rBefore: before, rAfter: st.rating, open, acpl, perf, startCp: evals[0].cp, v: 2 };
+  return { d: Date.now(), c: color, sans, moves, finalCp, cpUser, acc, counts, delta, rBefore: before, rAfter: st.rating, open, acpl, perf, startCp: evals[0].cp, result, v: 3 };
 }
 
 // Abgleich mit den eigenen Repertoires dieser Farbe
@@ -1622,7 +1653,7 @@ function renderSparReport(main, g, initialSel) {
     if (rc.type === 'end') events.push({ i: devAt, cls: 'end', label: plyLabel(devAt), text: `Ende deines Repertoires „${rc.rep.name}“ – bis hier alles nach Plan` });
     if (rc.type === 'trap') events.push({ i: devAt, cls: 'dev', label: plyLabel(devAt), text: 'Selbst als Fehler (Falle) markierten Zug gespielt!' });
   }
-  g.moves.forEach((m, i) => { if (isErr(m)) events.push({ i, cls: 'c-' + m.cls, label: plyLabel(i) + ICON[m.cls][0], text: `${ICON[m.cls][1]} · besser ${fmt(m.best || '?')}` }); });
+  g.moves.forEach((m, i) => { if (isErr(m)) events.push({ i, cls: 'c-' + m.cls, label: plyLabel(i) + ICON[m.cls][0], text: (m.turn ? 'Hier kippte die Partie' : ICON[m.cls][1]) + ` (${m.cpLoss != null ? '−' + (m.cpLoss / 100).toFixed(2) : '−' + m.loss + ' %'}) · besser ${fmt(m.best || '?')}` }); });
   events.sort((a, b) => a.i - b.i);
 
   const listEl = h('div', { class: 'move-table' });
@@ -1668,7 +1699,9 @@ function renderSparReport(main, g, initialSel) {
     if (i === devAt && rc.type === 'own') detail.append(h('p', { class: 'tag-dev' }, '⑂ Hier bist du von deiner Vorbereitung abgewichen. Vorbereitet war ', h('strong', {}, (rc.expected || []).map(fmt).join(' oder ')), ' (blauer Pfeil).'));
     if (i === devAt && rc.type === 'opp') detail.append(h('p', { class: 'tag-opp' }, '⑂ Diesen Zug hast du noch nicht vorbereitet – du kannst ihn unten ins Repertoire übernehmen.'));
     if (i === devAt && rc.type === 'end') detail.append(h('p', { class: 'muted' }, 'Ab hier hat dein Repertoire keine Züge mehr.'));
-    if (isErr(m)) detail.append(h('p', {}, `${ICON[m.cls][1]} (−${m.loss} % Gewinnchance). Rot: dein Zug – besser war `, h('strong', {}, fmt(m.best || '?')), ' (grün). Engine und Datenbank zeigen die Stellung vor deinem Zug.'));
+    if (isErr(m)) detail.append(h('p', {}, m.turn ? 'Hier kippte die Partie: Nach diesem Zug stehst du schlechter. ' : `${ICON[m.cls][1]}. `,
+      m.cpLoss != null ? `Die Bewertung fällt um ${(m.cpLoss / 100).toFixed(2)} Bauern. ` : `−${m.loss} % Gewinnchance. `,
+      'Rot: dein Zug – besser war ', h('strong', {}, fmt(m.best || '?')), ' (grün). Engine und Datenbank zeigen die Stellung vor deinem Zug.'));
     else if (m.mine && m.cls === 'best') detail.append(h('p', {}, '★ Bester Zug laut Engine.'));
     paintAdd();
   }
@@ -1869,6 +1902,8 @@ function renderSparReport(main, g, initialSel) {
             h('div', { class: 'res' }, h('b', { class: 'c-mistake' }, g.counts.mistake), h('span', {}, 'Fehler')),
             h('div', { class: 'res' }, h('b', { class: 'c-inacc' }, g.counts.inacc), h('span', {}, 'Ungenau')),
             h('div', { class: 'res' }, h('b', {}, g.rAfter, h('small', { class: g.delta >= 0 ? 'pos' : 'neg' }, ' ' + (g.delta >= 0 ? '+' : '') + g.delta)), h('span', {}, 'Wertung'))),
+          g.result ? h('p', { class: 'result-line ' + g.result }, g.result === 'win' ? '✓ Gewonnen' : '✕ Verloren',
+            h('span', { class: 'muted small' }, g.c === 'w' ? ' – mit Weiß zählt ab ±0,00 als Sieg' : ' – mit Schwarz zählt bis −1,00 als Sieg')) : null,
           h('p', { class: 'small' }, h('strong', {}, evalText(g.cpUser)), ` (${cpTxt})`, g.perf ? h('span', { class: 'muted' }, ` · Partie-Leistung ≈ ${g.perf}`) : null)),
         h('h4', {}, 'Was ist passiert?'),
         evBox,
