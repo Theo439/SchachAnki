@@ -1,0 +1,21 @@
+{
+  "name": "schach-anki",
+  "version": "0.6.0",
+  "private": true,
+  "description": "Schacheröffnungen mit Karteikarten-Prinzip lernen",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:artifact": "node build.mjs artifact",
+    "start": "node build.mjs && npx --yes serve dist"
+  },
+  "dependencies": {
+    "chess.js": "^1.4.0",
+    "chessground": "^9.2.1",
+    "stockfish": "^19.0.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}
