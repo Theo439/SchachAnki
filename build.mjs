@@ -12,9 +12,15 @@ const version = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 
+// Supabase nur in der Website; claude.ai bekommt einen Platzhalter, Tests einen Nachbau
+const cloudFile = process.env.MOCK_CLOUD ? 'cloud-mock.js' : WEB ? 'cloud.js' : 'cloud-stub.js';
+const cloudPlugin = {
+  name: 'cloud',
+  setup(b) { b.onResolve({ filter: /^\.\/cloud\.js$/ }, () => ({ path: new URL('./src/' + cloudFile, import.meta.url).pathname })); },
+};
 const res = await build({
   entryPoints: ['src/app.js'], bundle: true, minify: true, format: 'iife', write: false, target: 'es2020',
-  define: { __WEB__: String(WEB) },
+  define: { __WEB__: String(WEB) }, plugins: [cloudPlugin],
 });
 const js = res.outputFiles[0].text.replace(/<\/script/gi, '<\\/script');
 const cgCss = ['base', 'brown', 'cburnett'].map((n) => readFileSync(`node_modules/chessground/assets/chessground.${n}.css`, 'utf8')).join('\n');
@@ -45,7 +51,7 @@ ${css}
   <button id="logo" aria-label="Zur Übersicht"><span class="mark">♞</span><span class="word">Schach-Anki</span></button>
   <span class="spacer"></span>
   <span id="save-state"></span>
-  <span id="storage" class="status"></span>
+  <span id="storage" class="status"></span>${WEB ? '\n  <button id="account-btn" class="btn small account-btn">Anmelden</button>' : ''}
   <button id="settings-btn" class="icon-btn" title="Einstellungen" aria-label="Einstellungen">⚙</button>
 </header>
 <main id="main"></main>

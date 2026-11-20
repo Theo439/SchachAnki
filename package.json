@@ -1,6 +1,6 @@
 {
   "name": "schach-anki",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Schacheröffnungen mit Karteikarten-Prinzip lernen",
   "license": "GPL-3.0-or-later",
@@ -11,6 +11,7 @@
     "start": "node build.mjs && npx --yes serve dist"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.119.2",
     "chess.js": "^1.4.0",
     "chessground": "^9.2.1",
     "stockfish": "^19.0.1"

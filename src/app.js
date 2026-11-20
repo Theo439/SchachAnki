@@ -4,6 +4,7 @@ import { PRESETS } from './presets.js';
 import * as C from './core.js';
 import { Engine, formatEval, evalShare } from './engine.js';
 import * as X from './explorer.js';
+import * as Cloud from './cloud.js';
 
 let engine = null;
 // Wird beim Bauen gesetzt: true = eigenständige Website, false = claude.ai-Artefakt
@@ -57,18 +58,19 @@ const store = {
     return {
       kind: 'rep', name: rep.name, color: rep.color, description: rep.description || '',
       presetId: rep.presetId || null, tree: C.serializeTree(rep.root),
-      srs: Object.entries(rep.srs), lines: Object.entries(rep.lines || {}), createdAt: rep.createdAt, updatedAt: Date.now(),
+      srs: Object.entries(rep.srs), lines: Object.entries(rep.lines || {}), createdAt: rep.createdAt, updatedAt: rep.updatedAt || Date.now(),
     };
   },
   deserializeRep(id, d) {
     return {
       id, name: d.name || 'Repertoire', color: d.color === 'b' ? 'b' : 'w', description: d.description || '',
       presetId: d.presetId || null, root: C.deserializeTree(d.tree), srs: Object.fromEntries(d.srs || []), lines: Object.fromEntries(d.lines || []),
-      createdAt: d.createdAt || Date.now(),
+      createdAt: d.createdAt || Date.now(), updatedAt: d.updatedAt || 0,
     };
   },
 
   async init() {
+    if (IS_WEB) return this.initWeb();
     let db = null, user = null;
     try {
       if (!IS_WEB && window.claude?.use) {
@@ -155,10 +157,291 @@ const store = {
       if (this.pending.has(docId)) this.flush(docId);
     }
   },
-  saveRep(rep) { setSaved(false); this.schedule(rep.id, () => this.serializeRep(rep)); },
-  deleteRep(rep) { this.schedule(rep.id, () => null); },
-  saveSettings() { this.schedule('settings', () => ({ ...app.settings })); },
+  saveRep(rep) { rep.updatedAt = Date.now(); setSaved(false); this.schedule(rep.id, () => this.serializeRep(rep)); if (app.storage === 'account') this.markDirty('rep', rep.id); },
+  deleteRep(rep) { this.schedule(rep.id, () => null); if (app.storage === 'account') this.markDirty('del', rep.id); },
+  saveSettings() { app.settings._ts = Date.now(); this.schedule('settings', () => ({ ...app.settings })); if (app.storage === 'account') this.markDirty('settings'); },
+
+  // ================= Konto (Supabase) – nur Website =================
+  user: null, pushing: false, pushAgain: false, offline: false, lastPull: 0, pushTimer: null,
+  DIRTY: 'schach-anki-dirty', OWNER: 'schach-anki-owner',
+
+  async initWeb() {
+    app.storage = 'local';
+    const local = this.readLocal();
+    if (local) { app.reps = local.reps; app.settings = { ...app.settings, ...local.settings }; }
+    const client = Cloud.sb();
+    if (!client) return;
+    try {
+      const { data } = await client.auth.getSession();
+      client.auth.onAuthStateChange((event, session) => this.onAuth(event, session));
+      if (data?.session) {
+        this.user = data.session.user;
+        app.storage = 'account';
+        try { await this.pull(); } catch (e) { this.offline = true; }
+      }
+    } catch (e) { /* ohne Konto weiter */ }
+    window.addEventListener('online', () => { this.offline = false; this.schedulePush(0); });
+    window.addEventListener('focus', () => {
+      if (app.storage !== 'account' || Date.now() - this.lastPull < 60000 || app.view !== 'home') return;
+      this.pull().then(() => { if (app.view === 'home') setView('home'); }).catch(() => {});
+    });
+  },
+
+  async onAuth(event, session) {
+    if (event === 'PASSWORD_RECOVERY') { openNewPassword(); return; }
+    if (event === 'SIGNED_IN' && session?.user && this.user?.id !== session.user.id) {
+      this.user = session.user;
+      app.storage = 'account';
+      renderStatus();
+      try { await this.pull({ interactive: true }); toast(`Angemeldet als ${session.user.email}`, 'good'); }
+      catch (e) { this.offline = true; toast('Angemeldet – Daten konnten noch nicht geladen werden.', 'bad'); }
+      renderStatus();
+      if (app.view === 'home') setView('home');
+    }
+  },
+
+  loadDirty() { try { return { reps: {}, del: {}, settings: 0, ...JSON.parse(localStorage.getItem(this.DIRTY) || '{}') }; } catch (e) { return { reps: {}, del: {}, settings: 0 }; } },
+  saveDirty(d) { try { localStorage.setItem(this.DIRTY, JSON.stringify(d)); } catch (e) { /* egal */ } },
+  dirtyCount() { const d = this.loadDirty(); return Object.keys(d.reps).length + Object.keys(d.del).length + (d.settings ? 1 : 0); },
+  markDirty(kind, id) {
+    const d = this.loadDirty();
+    const stamp = Date.now() + Math.random();
+    if (kind === 'rep') { d.reps[id] = stamp; delete d.del[id]; }
+    else if (kind === 'del') { d.del[id] = Date.now(); delete d.reps[id]; }
+    else d.settings = stamp;
+    this.saveDirty(d);
+    this.schedulePush();
+    renderStatus();
+  },
+  schedulePush(ms = 1200) {
+    if (app.storage !== 'account') return;
+    clearTimeout(this.pushTimer);
+    this.pushTimer = setTimeout(() => this.push(), ms);
+  },
+
+  // Geänderte Daten ins Konto hochladen
+  async push() {
+    if (app.storage !== 'account') return;
+    if (this.pushing) { this.pushAgain = true; return; }
+    const d = this.loadDirty();
+    const repIds = Object.keys(d.reps), delIds = Object.keys(d.del);
+    if (!repIds.length && !delIds.length && !d.settings) { renderStatus(); return; }
+    this.pushing = true; renderStatus();
+    const client = Cloud.sb();
+    try {
+      const rows = [];
+      for (const id of repIds) {
+        const r = app.reps.find((x) => x.id === id);
+        if (r) rows.push({ user_id: this.user.id, id, data: this.serializeRep(r), deleted: false, updated_at: new Date(r.updatedAt || Date.now()).toISOString() });
+      }
+      for (const id of delIds) rows.push({ user_id: this.user.id, id, data: null, deleted: true, updated_at: new Date(d.del[id]).toISOString() });
+      if (rows.length) { const { error } = await client.from('repertoires').upsert(rows, { onConflict: 'user_id,id' }); if (error) throw error; }
+      if (d.settings) {
+        const { error } = await client.from('user_settings').upsert({ user_id: this.user.id, data: app.settings, updated_at: new Date(app.settings._ts || Date.now()).toISOString() }, { onConflict: 'user_id' });
+        if (error) throw error;
+      }
+      // Nur das als erledigt markieren, was sich seitdem nicht erneut geändert hat
+      const now = this.loadDirty();
+      for (const id of repIds) if (now.reps[id] === d.reps[id]) delete now.reps[id];
+      for (const id of delIds) if (now.del[id] === d.del[id]) delete now.del[id];
+      if (now.settings === d.settings) now.settings = 0;
+      this.saveDirty(now);
+      this.offline = false;
+    } catch (e) {
+      this.offline = true;
+      clearTimeout(this.pushTimer);
+      this.pushTimer = setTimeout(() => this.push(), 30000);
+    } finally {
+      this.pushing = false;
+      renderStatus();
+      if (this.pushAgain) { this.pushAgain = false; this.schedulePush(300); }
+    }
+  },
+
+  // Daten aus dem Konto laden und mit dem Browser abgleichen (neuere Version gewinnt)
+  async pull({ interactive = false } = {}) {
+    const client = Cloud.sb();
+    const [repRes, setRes] = await Promise.all([
+      client.from('repertoires').select('id,data,deleted,updated_at'),
+      client.from('user_settings').select('data,updated_at').maybeSingle(),
+    ]);
+    if (repRes.error) throw repRes.error;
+    if (setRes.error) throw setRes.error;
+    const rows = repRes.data || [];
+    const uid = this.user.id;
+    let owner = null;
+    try { owner = localStorage.getItem(this.OWNER); } catch (e) { /* egal */ }
+    let d = this.loadDirty();
+
+    if (owner && owner !== uid) {
+      // Die Daten im Browser gehören zu einem anderen Konto → nicht vermischen
+      app.reps = []; d = { reps: {}, del: {}, settings: 0 };
+      app.settings = { newLinesPerDay: 5, notation: app.settings.notation || 'de', newLog: {}, spar: null };
+    } else if (!owner && app.reps.length) {
+      // Erste Anmeldung in diesem Browser mit vorhandenen Daten
+      const remoteCount = rows.filter((r) => !r.deleted).length;
+      const take = interactive || !remoteCount ? await askTakeLocal(app.reps.length, remoteCount) : true;
+      if (take) { for (const r of app.reps) d.reps[r.id] = Date.now() + Math.random(); d.settings = Date.now(); }
+      else { app.reps = []; }
+    }
+    try { localStorage.setItem(this.OWNER, uid); } catch (e) { /* egal */ }
+
+    for (const row of rows) {
+      const ts = Date.parse(row.updated_at) || 0;
+      const i = app.reps.findIndex((r) => r.id === row.id);
+      const local = i >= 0 ? app.reps[i] : null;
+      if (row.deleted) {
+        if (local && !(d.reps[row.id] && (local.updatedAt || 0) > ts)) { app.reps.splice(i, 1); delete d.reps[row.id]; }
+        continue;
+      }
+      if (!row.data) continue;
+      if (d.del[row.id]) continue; // lokal gelöscht, Löschung wird noch hochgeladen
+      if (!local) { app.reps.push(this.deserializeRep(row.id, row.data)); continue; }
+      if (ts > (local.updatedAt || 0)) { app.reps[i] = this.deserializeRep(row.id, row.data); delete d.reps[row.id]; }
+      else if ((local.updatedAt || 0) > ts) d.reps[row.id] = d.reps[row.id] || Date.now() + Math.random();
+    }
+    // Nur lokal vorhandene Repertoires hochladen
+    for (const r of app.reps) if (!rows.some((x) => x.id === r.id)) d.reps[r.id] = d.reps[r.id] || Date.now() + Math.random();
+    app.reps.sort((a, b) => a.createdAt - b.createdAt);
+
+    const remoteSet = setRes.data;
+    if (remoteSet && !d.settings && (Date.parse(remoteSet.updated_at) || 0) > (app.settings._ts || 0)) {
+      app.settings = { ...app.settings, ...remoteSet.data };
+    } else if (!remoteSet || (app.settings._ts || 0) > (Date.parse(remoteSet.updated_at) || 0)) {
+      d.settings = d.settings || Date.now();
+    }
+    this.saveDirty(d);
+    this.writeLocal();
+    this.lastPull = Date.now();
+    this.offline = false;
+    renderStatus();
+    this.schedulePush(100);
+  },
+
+  async logout() {
+    if (this.dirtyCount()) { await this.push(); }
+    if (this.dirtyCount()) {
+      const ok = await new Promise((res) => confirmDialog('Noch nicht alles übertragen', 'Einige Änderungen sind noch nicht im Konto gespeichert (keine Verbindung?). Trotzdem abmelden? Diese Änderungen gehen dann verloren.', 'Trotzdem abmelden', () => res(true)) || setTimeout(() => res(false), 600000));
+      if (!ok) return;
+    }
+    try { await Cloud.sb().auth.signOut(); } catch (e) { /* egal */ }
+    // Daten aus diesem Browser entfernen – sie liegen sicher im Konto
+    try { [LS_KEY, this.DIRTY, this.OWNER].forEach((k) => localStorage.removeItem(k)); } catch (e) { /* egal */ }
+    this.user = null;
+    app.storage = 'local';
+    app.reps = [];
+    app.settings = { newLinesPerDay: 5, notation: app.settings.notation || 'de', newLog: {}, spar: null };
+    renderStatus();
+    setView('home');
+    toast('Abgemeldet');
+  },
 };
+
+// ---------- Konto-Dialoge ----------
+function askTakeLocal(nLocal, nRemote) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const close = modal('Daten aus diesem Browser übernehmen?', h('div', { class: 'form' },
+      h('p', {}, `In diesem Browser sind ${nLocal} Repertoire${nLocal === 1 ? '' : 's'} gespeichert` + (nRemote ? `, in deinem Konto ${nRemote}.` : '. Dein Konto ist noch leer.')),
+      h('p', { class: 'muted small' }, 'Übernehmen: Die Repertoires aus diesem Browser kommen zusätzlich in dein Konto (bei gleichen Repertoires gewinnt die neuere Version). Nicht übernehmen: Es wird nur verwendet, was im Konto liegt.')),
+    (c) => [
+      h('button', { class: 'btn ghost', onclick: () => { c(); finish(false); } }, 'Nicht übernehmen'),
+      h('button', { class: 'btn primary', onclick: () => { c(); finish(true); } }, 'Übernehmen'),
+    ]);
+    // Schließen ohne Auswahl = übernehmen (es geht nichts verloren)
+    const wrap = document.querySelector('.modal-wrap:last-of-type');
+    if (wrap) new MutationObserver((m, o) => { if (!document.body.contains(wrap)) { o.disconnect(); finish(true); } }).observe(document.body, { childList: true });
+    void close;
+  });
+}
+
+function openAccount() {
+  if (store.user) {
+    const n = store.dirtyCount();
+    modal('Dein Konto', h('div', { class: 'form' },
+      h('p', {}, 'Angemeldet als ', h('strong', {}, store.user.email || '')),
+      h('p', { class: 'muted small' }, store.offline ? 'Gerade keine Verbindung – Änderungen werden übertragen, sobald du wieder online bist.'
+        : n ? `${n} Änderung${n === 1 ? '' : 'en'} werden gerade übertragen …` : 'Alles ist mit deinem Konto synchronisiert. Du kannst dich auf jedem Gerät anmelden und findest dort dieselben Daten.'),
+    ), (close) => [
+      h('button', { class: 'btn ghost', onclick: async () => { close(); try { await store.push(); await store.pull(); toast('Synchronisiert', 'good'); if (app.view === 'home') setView('home'); } catch (e) { toast('Keine Verbindung zum Konto.', 'bad'); } } }, '⟳ Jetzt synchronisieren'),
+      h('button', { class: 'btn', onclick: () => { close(); store.logout(); } }, 'Abmelden'),
+    ]);
+    return;
+  }
+  let mode = 'login';
+  const email = h('input', { type: 'email', placeholder: 'deine@email.de', autocomplete: 'email' });
+  const pw = h('input', { type: 'password', placeholder: 'Passwort (mind. 8 Zeichen)', autocomplete: 'current-password' });
+  const err = h('p', { class: 'error' });
+  const info = h('p', { class: 'muted small' });
+  const tabs = h('div', { class: 'tabs' });
+  const submit = h('button', { class: 'btn primary' });
+  const paint = () => {
+    tabs.innerHTML = '';
+    tabs.append(
+      h('button', { class: 'tab' + (mode === 'login' ? ' on' : ''), onclick: () => { mode = 'login'; paint(); } }, 'Anmelden'),
+      h('button', { class: 'tab' + (mode === 'signup' ? ' on' : ''), onclick: () => { mode = 'signup'; paint(); } }, 'Konto erstellen'));
+    submit.textContent = mode === 'login' ? 'Anmelden' : 'Konto erstellen';
+    pw.autocomplete = mode === 'login' ? 'current-password' : 'new-password';
+    info.textContent = mode === 'signup'
+      ? 'Du bekommst eine E-Mail mit einem Bestätigungslink. Danach sind deine Repertoires in deinem Konto gespeichert und auf allen Geräten verfügbar.'
+      : '';
+    err.textContent = '';
+  };
+  const forgot = h('button', { class: 'linkish', onclick: async () => {
+    if (!email.value.includes('@')) { err.textContent = 'Bitte zuerst deine E-Mail-Adresse eintragen.'; return; }
+    const { error } = await Cloud.sb().auth.resetPasswordForEmail(email.value.trim(), { redirectTo: location.origin + location.pathname });
+    err.textContent = '';
+    info.textContent = error ? 'Das hat nicht geklappt: ' + error.message : 'Wir haben dir eine E-Mail zum Zurücksetzen des Passworts geschickt.';
+  } }, 'Passwort vergessen?');
+  modal('Konto', h('form', { class: 'form', onsubmit: (e) => { e.preventDefault(); submit.click(); } }, tabs,
+    h('label', {}, 'E-Mail', email), h('label', {}, 'Passwort', pw), err, info, forgot,
+    h('p', { class: 'muted small' }, 'Ohne Konto funktioniert alles weiter – dann wird nur in diesem Browser gespeichert.')),
+  (close) => {
+    submit.onclick = async () => {
+      err.textContent = ''; info.textContent = '';
+      const e = email.value.trim(), p = pw.value;
+      if (!e.includes('@')) { err.textContent = 'Bitte eine gültige E-Mail-Adresse eingeben.'; return; }
+      if (p.length < 8) { err.textContent = 'Das Passwort muss mindestens 8 Zeichen haben.'; return; }
+      submit.disabled = true;
+      try {
+        const auth = Cloud.sb().auth;
+        if (mode === 'login') {
+          const { error } = await auth.signInWithPassword({ email: e, password: p });
+          if (error) throw error;
+          close();
+        } else {
+          const { data, error } = await auth.signUp({ email: e, password: p, options: { emailRedirectTo: location.origin + location.pathname } });
+          if (error) throw error;
+          if (data?.session) close();
+          else info.textContent = '✉️ Fast geschafft! Bitte bestätige deine E-Mail-Adresse über den Link in der Mail, die wir dir gerade geschickt haben. Danach bist du hier automatisch angemeldet.';
+        }
+      } catch (ex) {
+        const m = String(ex?.message || ex);
+        err.textContent = /Invalid login/i.test(m) ? 'E-Mail oder Passwort stimmt nicht.'
+          : /not confirmed/i.test(m) ? 'Bitte bestätige zuerst deine E-Mail-Adresse (Link in der Mail).'
+            : /already registered/i.test(m) ? 'Für diese E-Mail gibt es schon ein Konto – bitte anmelden.'
+              : /rate limit/i.test(m) ? 'Zu viele Versuche – bitte in ein paar Minuten nochmal.'
+                : /fetch|network/i.test(m) ? 'Keine Verbindung zum Server.' : m;
+      } finally { submit.disabled = false; }
+    };
+    return [h('button', { class: 'btn ghost', type: 'button', onclick: close }, 'Abbrechen'), submit];
+  });
+  paint();
+}
+
+function openNewPassword() {
+  const pw = h('input', { type: 'password', placeholder: 'Neues Passwort (mind. 8 Zeichen)', autocomplete: 'new-password' });
+  const err = h('p', { class: 'error' });
+  modal('Neues Passwort festlegen', h('div', { class: 'form' }, h('label', {}, 'Neues Passwort', pw), err), (close) => [
+    h('button', { class: 'btn primary', onclick: async () => {
+      if (pw.value.length < 8) { err.textContent = 'Mindestens 8 Zeichen.'; return; }
+      const { error } = await Cloud.sb().auth.updateUser({ password: pw.value });
+      if (error) { err.textContent = error.message; return; }
+      close(); toast('Passwort geändert', 'good');
+    } }, 'Speichern'),
+  ]);
+}
 
 function setSaved(ok) {
   const el = $('#save-state');
@@ -2084,8 +2367,21 @@ function renderEdit(main, { repId, key, engine: engineParam, analysis: analysisP
 // Rahmen
 // ======================================================================
 function renderStatus() {
+  const btn = $('#account-btn');
+  if (btn) {
+    btn.textContent = store.user ? '👤 ' + (store.user.email || 'Konto').split('@')[0] : 'Anmelden';
+    btn.title = store.user ? `Angemeldet als ${store.user.email}` : 'Konto erstellen oder anmelden – deine Repertoires auf allen Geräten';
+    btn.classList.toggle('in', !!store.user);
+  }
   const el = $('#storage');
   if (!el) return;
+  if (app.storage === 'account') {
+    const n = store.dirtyCount();
+    el.className = 'status ' + (store.offline ? 'local' : 'cloud');
+    el.textContent = store.offline ? '● Offline – wird später übertragen' : store.pushing || n ? '● Synchronisiere …' : '● Im Konto gespeichert';
+    el.title = '';
+    return;
+  }
   el.className = 'status ' + app.storage;
   el.textContent = app.storage === 'cloud' ? '● In deinem Konto gespeichert' : app.storage === 'local' ? (IS_WEB ? '● In diesem Browser gespeichert' : '● Nur in diesem Browser gespeichert') : '● Lade …';
   el.title = app.storage === 'local' ? 'Tipp: Unter ⚙ Einstellungen kannst du ein Backup herunterladen.' : '';
@@ -2094,6 +2390,7 @@ function renderStatus() {
 async function boot() {
   document.body.append(h('div', { id: 'toasts' }));
   $('#settings-btn').addEventListener('click', openSettings);
+  $('#account-btn')?.addEventListener('click', openAccount);
   $('#logo').addEventListener('click', () => setView('home'));
   renderStatus();
   $('#main').innerHTML = '<div class="loading"><div class="spinner"></div><p>Lade dein Repertoire …</p></div>';

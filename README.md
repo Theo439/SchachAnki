@@ -20,7 +20,8 @@ Schacheröffnungen lernen wie mit Karteikarten. Man legt eigene Repertoires an o
   - Danach eine Auswertung: Abweichungen vom Repertoire, Fehler, Genauigkeit und eine eigene Wertung.
 - **Installierbar** als App (PWA) und offline nutzbar.
 - **Daten:**
-  - Alles bleibt lokal im Browser.
+  - Ohne Konto bleibt alles lokal im Browser.
+  - Mit Konto (Supabase, Anmeldung per E-Mail und Passwort) werden Repertoires, Lernstand und Sparring-Partien synchronisiert und sind auf allen Geräten verfügbar.
   - Ein Backup (Export/Import) gibt es unter ⚙ Einstellungen.
 
 ## Entwickeln
@@ -41,6 +42,8 @@ Jeder Push auf `main` baut die Seite und veröffentlicht sie über GitHub Action
 | `src/explorer.js` | Eröffnungsdatenbank und Eröffnungsnamen |
 | `src/presets.js` | Vorlagen-Repertoires |
 | `src/sw.js` | Service Worker (offline, installierbar) |
+| `src/cloud.js` | Supabase-Verbindung (Konten, Online-Speicher); `cloud-stub.js` für claude.ai, `cloud-mock.js` für Tests (`MOCK_CLOUD=1 node build.mjs`) |
+| `supabase/schema.sql` | Tabellen und Zugriffsregeln (Row Level Security) |
 | `public/db/` | Datenbank (64 Shards) und Eröffnungsnamen |
 | `scripts/` | Skripte zum Erzeugen der Datenbank, der Namen und der Symbole |
 

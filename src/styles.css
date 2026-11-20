@@ -444,3 +444,10 @@ cg-board square.check { background: radial-gradient(ellipse at center, rgba(255,
 .backup h4 { font-family: Inter, sans-serif; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .backup p { margin: 0; }
 .modal-body { max-height: 75vh; overflow: auto; }
+.account-btn { white-space: nowrap; }
+.account-btn.in { background: rgba(111, 191, 115, .12); border-color: rgba(111, 191, 115, .5); color: var(--good); }
+.tabs { display: flex; gap: 4px; background: var(--bg2); padding: 4px; border-radius: 10px; }
+.tab { flex: 1; border: 0; background: transparent; padding: 8px; border-radius: 8px; cursor: pointer; font-weight: 600; color: var(--muted); }
+.tab.on { background: var(--card2); color: var(--text); }
+.linkish { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; justify-self: start; font-size: 13px; }
+@media (max-width: 900px) { .account-btn { padding: 6px 10px; } }
