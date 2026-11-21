@@ -1822,9 +1822,7 @@ function renderSparReport(main, g, initialSel) {
     try { [res] = await Promise.all([X.lookup(fen), X.loadNames().catch(() => null)]); } catch (e) { dbEl.innerHTML = ''; dbEl.append(h('p', { class: 'muted small' }, 'Datenbank nicht verfügbar.')); return; }
     if (id !== dbReq) return;
     dbEl.innerHTML = '';
-    const nm = X.nameOf(fen);
     dbEl.append(h('div', { class: 'db-head' },
-      nm ? h('div', { class: 'db-name' }, h('span', { class: 'eco' }, nm.eco), nm.name) : null,
       h('div', { class: 'muted small' }, res.total ? `${res.total.toLocaleString('de-DE')} Meisterpartien` : 'Keine Meisterpartien mit dieser Stellung')));
     if (!res.total) return;
     const table = h('div', { class: 'db-table' }, h('div', { class: 'db-row head' }, h('span', {}, 'Zug'), h('span', {}, 'Anteil'), h('span', {}, 'Weiß / Remis / Schwarz')));
@@ -1967,11 +1965,11 @@ function renderEdit(main, { repId, key, engine: engineParam, analysis: analysisP
         anaBox,
         h('div', { class: 'edit-head' }, nameInput, colorSel),
         statsEl,
-        dbPanel,
         enginePanel,
         h('h4', {}, 'Zugbaum'),
         tree,
         nodeInfo,
+        dbPanel,
         h('details', { class: 'io' },
           h('summary', {}, 'PGN importieren / exportieren'),
           pgnTools()),
@@ -2057,14 +2055,10 @@ function renderEdit(main, { repId, key, engine: engineParam, analysis: analysisP
     catch (e) { if (id === dbReq) { dbPanel.innerHTML = ''; dbPanel.append(h('p', { class: 'muted small' }, 'Die Datenbank konnte nicht geladen werden.')); } return; }
     if (id !== dbReq) return;
     dbPanel.innerHTML = '';
-    const on = X.openingName(node);
     const mine = C.turnOf(node.fen) === rep.color;
     dbPanel.append(h('div', { class: 'db-head' },
-      h('div', { class: 'db-name' }, on ? h('span', { class: 'eco' }, on.eco) : null, on ? on.name : 'Startstellung'),
       h('div', { class: 'muted small' }, res.total ? `${res.total.toLocaleString('de-DE')} Meisterpartien` : 'Keine Meisterpartien')));
-    if (!res.total) {
-      dbPanel.append(h('p', { class: 'muted small' }, C.plyOf(node) >= 22 ? 'Die Datenbank reicht bis zum 11. Zug.' : 'Diese Stellung kam in den Meisterpartien (2400+) nicht oder nur sehr selten vor.'));
-    } else {
+    if (res.total) {
       const table = h('div', { class: 'db-table' }, h('div', { class: 'db-row head' }, h('span', {}, 'Zug'), h('span', {}, 'Anteil'), h('span', {}, 'Weiß / Remis / Schwarz')));
       for (const m of res.moves) {
         const inRep = node.children.find((c) => c.san === m.san);
