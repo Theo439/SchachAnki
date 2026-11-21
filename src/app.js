@@ -1322,7 +1322,7 @@ function renderSpar(main, params = {}) {
   const st = sparState();
   if (params.report) return renderSparReport(main, params.report, params.sel);
   if (!params.color) return renderSparStart(main, st);
-  renderSparGame(main, st, params.color, params.resume);
+  renderSparGame(main, st, params.color, params.resume, params.forced || null);
 }
 
 function renderSparStart(main, st) {
@@ -1375,7 +1375,10 @@ function ratingChart(games) {
 const PENDING_KEY = 'schach-anki-spar-pending';
 function readPending() { try { return JSON.parse(localStorage.getItem(PENDING_KEY) || 'null'); } catch (e) { return null; } }
 
-function renderSparGame(main, st, color, resume) {
+// forced: Zugfolge (SAN) der Eröffnung, die gespielt werden soll. Die Engine spielt ihre Züge daraus,
+// solange du der Zugfolge folgst; danach geht es frei weiter.
+const lineLabel = (forced) => forced.map((san, i) => (i % 2 === 0 ? `${i / 2 + 1}.` : '') + fmt(san)).join(' ');
+function renderSparGame(main, st, color, resume, forced) {
   const boardEl = h('div', { class: 'board' });
   const info = h('div', { class: 'spar-info' });
   const movesEl = h('div', { class: 'movelist' });
@@ -1387,7 +1390,7 @@ function renderSparGame(main, st, color, resume) {
       h('div', { class: 'counters' }, h('span', { class: 'cnt cram' }, `Wertung ${Math.round(st.rating)}`))),
     h('div', { class: 'layout' },
       h('div', { class: 'board-col' }, h('div', { class: 'board-holder' }, boardEl)),
-      h('aside', { class: 'panel' }, h('div', { class: 'train-title' }, pieceIcon(color), h('span', { class: 'tt' }, h('span', {}, 'Sparring'), h('span', { class: 'tsub' }, `Du spielst ${colorName(color)} · Stockfish volle Stärke`))), info, openEl, movesEl, status)));
+      h('aside', { class: 'panel' }, h('div', { class: 'train-title' }, pieceIcon(color), h('span', { class: 'tt' }, h('span', {}, 'Sparring'), h('span', { class: 'tsub' }, forced?.length ? `${colorName(color)} · Eröffnung: ${lineLabel(forced)}` : `Du spielst ${colorName(color)} · Stockfish volle Stärke`))), info, openEl, movesEl, status)));
 
   const chess = new Chess();
   const sans = [];
@@ -1434,8 +1437,12 @@ function renderSparGame(main, st, color, resume) {
     status.append(h('p', { class: 'muted' }, 'Die Engine überlegt …'));
     const fen = chess.fen();
     let uci = null, source = 'engine';
+    // Vorgegebene Eröffnung: solange die Partie der Zugfolge folgt, spielt die Engine deren Zug
+    if (forced && sans.length < forced.length && sans.every((s, i) => s === forced[i])) {
+      try { const m = new Chess(fen).move(forced[sans.length]); uci = m.from + m.to + (m.promotion || ''); source = 'book'; } catch (e) { uci = null; }
+    }
     // Eröffnungsphase: menschlich wirkende Züge aus den Meisterpartien
-    if (sans.length < 20) {
+    if (!uci && sans.length < 20) {
       try {
         const res = await X.lookup(fen);
         const pool = res.moves.filter((m) => m.share >= 0.1 && m.score >= 0.4);
@@ -1478,7 +1485,7 @@ function renderSparGame(main, st, color, resume) {
     const txt = h('span', { class: 'muted small' }, `Stellung 0 von ${fens.length}`);
     status.append(h('p', {}, h('strong', {}, 'Partie beendet – die Engine wertet aus …')), h('div', { class: 'lp-bar' }, bar), txt);
     // Partie zwischenspeichern, damit sie bei einem Abbruch nicht verloren geht
-    try { localStorage.setItem(PENDING_KEY, JSON.stringify({ color, sans, d: Date.now() })); } catch (e) { /* egal */ }
+    try { localStorage.setItem(PENDING_KEY, JSON.stringify({ color, sans, forced, d: Date.now() })); } catch (e) { /* egal */ }
     try {
       // Jede Stellung bewerten (aus Sicht von Weiß) – höchstens ~0,6 s pro Stellung
       const evals = [];
@@ -1497,6 +1504,7 @@ function renderSparGame(main, st, color, resume) {
       }
       if (cancelled) return;
       const report = buildReport(color, sans, fens, evals, st);
+      if (forced?.length) report.forced = forced;
       st.games.push(report);
       if (st.games.length > 40) st.games = st.games.slice(-40);
       store.saveSettings();
@@ -1884,7 +1892,8 @@ function renderSparReport(main, g, initialSel) {
     h('div', { class: 'topline' },
       h('button', { class: 'btn ghost', onclick: () => setView('spar') }, '← Sparring'),
       h('div', { class: 'topline-right' },
-        h('button', { class: 'btn primary', onclick: () => setView('spar', { color: g.c }) }, `Neue Partie mit ${colorName(g.c)}`))),
+        g.forced?.length ? h('button', { class: 'btn', onclick: () => setView('spar', { color: g.c }) }, `Freie Partie mit ${colorName(g.c)}`) : null,
+        h('button', { class: 'btn primary', onclick: () => setView('spar', { color: g.c, forced: g.forced }) }, g.forced?.length ? `Nochmal: ${lineLabel(g.forced)}` : `Neue Partie mit ${colorName(g.c)}`))),
     h('div', { class: 'layout' },
       h('div', { class: 'board-col' }, h('div', { class: 'board-holder' }, boardEl),
         navRow,
@@ -1893,6 +1902,9 @@ function renderSparReport(main, g, initialSel) {
         addBox),
       h('aside', { class: 'panel' },
         h('div', { class: 'train-title' }, pieceIcon(g.c), h('span', { class: 'tt' }, h('span', {}, 'Auswertung'), h('span', { class: 'tsub' }, g.open || 'Sparring'))),
+        toolsEl,
+        h('h4', {}, 'Notation'),
+        listEl,
         h('div', { class: 'res-box' },
           h('div', { class: 'res-row' },
             h('div', { class: 'res' }, h('b', {}, g.acc + '%'), h('span', {}, 'Genauigkeit')),
@@ -1904,10 +1916,7 @@ function renderSparReport(main, g, initialSel) {
             h('span', { class: 'muted small' }, g.c === 'w' ? ' – mit Weiß zählt ab ±0,00 als Sieg' : ' – mit Schwarz zählt bis −1,00 als Sieg')) : null,
           h('p', { class: 'small' }, h('strong', {}, evalText(g.cpUser)), ` (${cpTxt})`, g.perf ? h('span', { class: 'muted' }, ` · Partie-Leistung ≈ ${g.perf}`) : null)),
         h('h4', {}, 'Was ist passiert?'),
-        evBox,
-        toolsEl,
-        h('h4', {}, 'Notation'),
-        listEl)));
+        evBox)));
 
   cg = makeBoard(boardEl, { orientation: cgColor(g.c), movable: { color: undefined } });
   select(initialSel ?? (events.length ? events[0].i : -1));
@@ -1957,6 +1966,7 @@ function renderEdit(main, { repId, key, engine: engineParam, analysis: analysisP
     h('div', { class: 'topline' },
       back ? h('button', { class: 'btn primary', onclick: () => setView(back.view || 'train', back) }, back.view === 'spar' ? '← Zurück zur Auswertung' : '← Zurück zum Training') : h('button', { class: 'btn ghost', onclick: () => setView('home') }, '← Übersicht'),
       h('div', { class: 'topline-right' }, modeBtn,
+        h('button', { class: 'btn', title: 'Sparring gegen die Engine – sie spielt die Eröffnung bis zur gewählten Stellung, danach frei. Wieder 15 Züge.', onclick: () => setView('spar', { color: rep.color, forced: C.pathOf(cur) }) }, '⚔ Sparring ab hier'),
         back ? null : h('button', { class: 'btn primary', onclick: () => setView('train', { repIds: [rep.id] }) }, 'Trainieren'))),
     h('div', { class: 'layout' },
       h('div', { class: 'board-col' }, h('div', { class: 'board-wrap' }, evalBar, boardEl), nav,
@@ -1966,7 +1976,7 @@ function renderEdit(main, { repId, key, engine: engineParam, analysis: analysisP
         h('div', { class: 'edit-head' }, nameInput, colorSel),
         statsEl,
         enginePanel,
-        h('h4', {}, 'Zugbaum'),
+        h('h4', { class: 'tree-title' }, 'Zugbaum'),
         tree,
         nodeInfo,
         dbPanel,
@@ -2183,6 +2193,8 @@ function renderEdit(main, { repId, key, engine: engineParam, analysis: analysisP
   }
 
   function paintMode() {
+    // Beim Analysieren: Datenbank – Engine – Notation – Rest
+    main.querySelector('.panel')?.classList.toggle('ana-order', analysis);
     modeBtn.textContent = analysis ? '🔍 Analysemodus' : '✎ Bearbeiten';
     modeBtn.title = analysis ? 'Klick: in den Bearbeiten-Modus wechseln (Züge werden sofort gespeichert)' : 'Klick: in den Analysemodus wechseln (Züge nur ausprobieren)';
     modeBtn.classList.toggle('on', analysis);

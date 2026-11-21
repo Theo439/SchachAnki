@@ -479,3 +479,9 @@ cg-board square.check { background: radial-gradient(ellipse at center, rgba(255,
 .result-line.win { color: var(--good); }
 .result-line.loss { color: var(--bad); }
 .result-line span { font-weight: 400; }
+/* Analysemodus: Datenbank – Engine – Zugbaum – Rest */
+.panel.ana-order > * { order: 5; }
+.panel.ana-order > .dbx { order: 1; }
+.panel.ana-order > .engine { order: 2; }
+.panel.ana-order > .tree-title { order: 3; }
+.panel.ana-order > .tree { order: 4; }
